@@ -5,15 +5,23 @@ from html import escape
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
 import database as db
+import challenge_service as svc
 from texts import t
 from timeutils import local_str, now_utc, parse_duration, remaining, to_db
 
 router = Router()
 router.message.filter(F.chat.type == "private", F.from_user.id.in_(config.ADMIN_IDS))
+router.callback_query.filter(F.from_user.id.in_(config.ADMIN_IDS))
+
+
+class CancelState(StatesGroup):
+    reason = State()
 log = logging.getLogger(__name__)
 
 HELP = (
@@ -29,15 +37,25 @@ HELP = (
     "/delcode <code>CODE</code> — حذف کد\n"
     "/codes — لیست کدها\n\n"
     "<b>چالش‌ها</b>\n"
-    "/addch <code>مدت هزینه عنوان | جایزه | توضیحات</code>\n"
-    "   مثال: <code>/addch 3d 0 چالش دعوت هفته | پریمیوم ۳ ماهه | بیشترین دعوت برنده است</code>\n"
-    "   مدت: <code>30m</code> دقیقه، <code>12h</code> ساعت، <code>3d</code> روز، ترکیبی: <code>1d12h</code>\n"
-    "   هزینه: توکن لازم برای شرکت (0 = رایگان) — توضیحات اختیاری است\n"
-    "/chs — لیست چالش‌ها با تعداد شرکت‌کننده\n"
+    "/addch <code>مدت [تنظیمات] عنوان | جایزه | توضیحات</code>\n"
+    "   مثال ساده: <code>/addch 3d چالش هفته | پریمیوم ۳ ماهه</code>\n"
+    "   مثال کامل: <code>/addch 2d winners=3 cost=5 limit=100 cooldown=24 refs=2 چالش ویژه | ۳ پریمیوم | توضیح</code>\n"
+    "   مدت: <code>30m</code> دقیقه، <code>12h</code> ساعت، <code>3d</code> روز، ترکیبی <code>1d12h</code>\n"
+    "   تنظیمات (همه اختیاری):\n"
+    "   • <code>winners=</code> تعداد برنده (پیش‌فرض 1)\n"
+    "   • <code>cost=</code> توکن لازم برای شرکت (پیش‌فرض 0 = رایگان)\n"
+    "   • <code>limit=</code> ظرفیت شرکت‌کننده (پیش‌فرض 0 = نامحدود)\n"
+    f"   • <code>cooldown=</code> برندگان چند ساعت اخیر نتوانند شرکت کنند (پیش‌فرض {config.DEFAULT_WIN_COOLDOWN}، 0 = بدون محدودیت)\n"
+    "   • <code>refs=</code> حداقل رفرال لازم (پیش‌فرض 0)\n"
+    "/setch <code>ID تنظیمات</code> — تغییر تنظیمات (مثال: <code>/setch 3 winners=2 cooldown=48</code>)\n"
     "/settime <code>ID مدت</code> — تعیین زمان جدید (از الان)\n"
+    "/chs — لیست چالش‌ها\n"
     "/parts <code>ID</code> — لیست شرکت‌کنندگان\n"
-    "/draw <code>ID تعداد</code> — قرعه‌کشی و اعلام برنده‌ها\n"
-    "/delch <code>ID</code> — حذف چالش\n\n"
+    "/draw <code>ID</code> — قرعه‌کشی همین الان (بدون صبر تا پایان زمان)\n"
+    "/cancelch <code>ID دلیل</code> — لغو چالش + اعلان به کاربران + برگشت هزینه\n"
+    "   (یا در صفحه چالش داخل ربات دکمه «🛑 لغو چالش» را بزن)\n"
+    "/delch <code>ID</code> — حذف بی‌صدای چالش\n\n"
+    "🎲 قرعه‌کشی در پایان زمان هر چالش <b>خودکار</b> انجام می‌شود و به همه شرکت‌کنندگان نتیجه اعلام می‌شود.\n\n"
     "<b>ارسال همگانی</b>\n"
     "روی هر پیامی Reply بزن و بنویس /broadcast\n\n"
     "<b>پشتیبانی</b>\n"
@@ -152,32 +170,96 @@ async def cmd_codes(message: Message):
     await message.answer("\n".join(lines))
 
 
+# ---------------- چالش‌ها ----------------
+OPTION_KEYS = {
+    "winners": "winners_count", "برنده": "winners_count",
+    "cost": "cost", "هزینه": "cost",
+    "limit": "max_participants", "ظرفیت": "max_participants",
+    "cooldown": "win_cooldown", "محدودیت": "win_cooldown",
+    "refs": "min_refs", "رفرال": "min_refs",
+}
+STATUS_ICON = {"open": "🟢", "drawing": "🎲", "drawn": "🏁", "cancelled": "🚫"}
+
+
+def parse_options(tokens: list[str]) -> tuple[dict, int] | None:
+    """گزینه‌های key=value ابتدای لیست را می‌خواند. خروجی: (تنظیمات، تعداد توکن مصرف‌شده)"""
+    opts, used = {}, 0
+    for tok in tokens:
+        if "=" not in tok:
+            break
+        key, _, val = tok.partition("=")
+        key = OPTION_KEYS.get(key.strip().lower())
+        if not key or not val.strip().isdigit():
+            return None
+        opts[key] = int(val)
+        used += 1
+    if "winners_count" in opts and opts["winners_count"] < 1:
+        return None
+    return opts, used
+
+
+def settings_text(c) -> str:
+    cap = c["max_participants"] or "نامحدود"
+    cd = f"{c['win_cooldown']} ساعت" if c["win_cooldown"] else "ندارد"
+    return (
+        f"🏅 برنده: {c['winners_count']} · 💰 هزینه: {c['cost']} · 👥 ظرفیت: {cap}\n"
+        f"⏳ محدودیت برندگان اخیر: {cd} · 🔗 حداقل رفرال: {c['min_refs']}"
+    )
+
+
 @router.message(Command("addch"))
 async def cmd_addch(message: Message, command: CommandObject):
     usage = (
-        "فرمت: /addch مدت هزینه عنوان | جایزه | توضیحات\n"
-        "مثال: <code>/addch 3d 0 چالش دعوت هفته | پریمیوم ۳ ماهه | بیشترین دعوت برنده است</code>"
+        "فرمت: /addch مدت [تنظیمات] عنوان | جایزه | توضیحات\n"
+        "مثال: <code>/addch 3d winners=2 چالش هفته | پریمیوم ۳ ماهه | توضیح اختیاری</code>\n"
+        "راهنمای کامل: /admin"
     )
-    parts = (command.args or "").split(maxsplit=2)
-    if len(parts) != 3 or not parts[1].isdigit():
+    tokens = (command.args or "").split()
+    duration = parse_duration(tokens[0]) if tokens else None
+    if not duration:
         await message.answer(usage)
         return
-    duration = parse_duration(parts[0])
-    fields = [f.strip() for f in parts[2].split("|")]
-    if not duration or len(fields) < 2 or not fields[0] or not fields[1]:
+    rest = tokens[1:]
+    legacy_cost = None
+    if rest and rest[0].isdigit():  # سازگاری با فرمت قدیمی: /addch 3d 5 عنوان...
+        legacy_cost = int(rest[0])
+        rest = rest[1:]
+    parsed = parse_options(rest)
+    if not parsed:
+        await message.answer("❌ تنظیمات نامعتبر است.\n" + usage)
+        return
+    opts, used = parsed
+    fields = [f.strip() for f in " ".join(rest[used:]).split("|")]
+    if len(fields) < 2 or not fields[0] or not fields[1]:
         await message.answer(usage)
         return
-    title, prize = fields[0], fields[1]
-    description = " | ".join(fields[2:]).strip()
+    if legacy_cost is not None:
+        opts.setdefault("cost", legacy_cost)
+    opts.setdefault("win_cooldown", config.DEFAULT_WIN_COOLDOWN)
     end_at = to_db(now_utc() + duration)
-    cid = await db.add_challenge(title, prize, description, int(parts[1]), end_at)
+    cid = await db.add_challenge(fields[0], fields[1], " | ".join(fields[2:]).strip(), end_at, **opts)
+    c = await db.get_challenge(cid)
     await message.answer(
-        f"✅ چالش #{cid} ساخته شد.\n"
-        f"🏆 {escape(title)}\n🎁 {escape(prize)}\n"
-        f"💰 هزینه: {parts[1]} توکن\n"
-        f"⏳ مدت: {remaining(end_at, 'fa')}\n🗓 پایان: {local_str(end_at)}\n\n"
+        f"✅ چالش #{cid} ساخته شد.\n\n"
+        f"🏆 {escape(c['title'])}\n🎁 {escape(c['prize'])}\n"
+        f"{settings_text(c)}\n"
+        f"⏳ مدت: {remaining(end_at, 'fa')} · 🗓 پایان و قرعه‌کشی: {local_str(end_at)}\n\n"
         "برای اطلاع‌رسانی به کاربران می‌توانی از /broadcast استفاده کنی."
     )
+
+
+@router.message(Command("setch"))
+async def cmd_setch(message: Message, command: CommandObject):
+    tokens = (command.args or "").split()
+    parsed = parse_options(tokens[1:]) if len(tokens) >= 2 and tokens[0].isdigit() else None
+    if not parsed or not parsed[0] or parsed[1] != len(tokens) - 1:
+        await message.answer("فرمت: /setch ID تنظیمات\nمثال: <code>/setch 3 winners=2 cooldown=48 limit=50</code>")
+        return
+    if not await db.update_challenge(int(tokens[0]), parsed[0]):
+        await message.answer("چالش پیدا نشد.")
+        return
+    c = await db.get_challenge(int(tokens[0]))
+    await message.answer(f"✅ تنظیمات چالش #{c['id']} به‌روز شد.\n{settings_text(c)}")
 
 
 @router.message(Command("chs"))
@@ -186,11 +268,12 @@ async def cmd_chs(message: Message):
     if not rows:
         await message.answer("هیچ چالشی وجود ندارد.")
         return
-    lines = ["🏆 <b>چالش‌ها</b>\n"]
+    lines = ["🏆 <b>چالش‌ها</b>  (🟢 باز · 🏁 قرعه‌کشی‌شده · 🚫 لغو‌شده)\n"]
     for c in rows:
+        left = remaining(c["end_at"], "fa") if c["status"] == "open" else local_str(c["end_at"])
         lines.append(
-            f"#{c['id']} — {escape(c['title'])}\n"
-            f"   🎁 {escape(c['prize'])} · 💰 {c['cost']} · 👥 {c['cnt']} نفر · ⏳ {remaining(c['end_at'], 'fa')}"
+            f"{STATUS_ICON.get(c['status'], '')} #{c['id']} — {escape(c['title'])}\n"
+            f"   🎁 {escape(c['prize'])} · 👥 {c['cnt']} نفر · 🏅 {c['winners_count']} برنده · ⏳ {left}"
         )
     await message.answer("\n".join(lines))
 
@@ -204,7 +287,7 @@ async def cmd_settime(message: Message, command: CommandObject):
         return
     end_at = to_db(now_utc() + duration)
     ok = await db.set_challenge_end(int(parts[0]), end_at)
-    await message.answer(f"✅ پایان جدید: {local_str(end_at)}" if ok else "چالش پیدا نشد.")
+    await message.answer(f"✅ پایان جدید: {local_str(end_at)}" if ok else "چالش باز با این شناسه پیدا نشد.")
 
 
 @router.message(Command("delch"))
@@ -217,12 +300,6 @@ async def cmd_delch(message: Message, command: CommandObject):
     await message.answer("✅ چالش حذف شد." if ok else "چالش پیدا نشد.")
 
 
-def _user_line(r) -> str:
-    uname = f"@{r['username']}" if r["username"] else "-"
-    name = escape(r["first_name"] or str(r["user_id"]))
-    return f"<a href=\"tg://user?id={r['user_id']}\">{name}</a> ({uname}) <code>{r['user_id']}</code>"
-
-
 @router.message(Command("parts"))
 async def cmd_parts(message: Message, command: CommandObject):
     arg = (command.args or "").strip()
@@ -233,12 +310,15 @@ async def cmd_parts(message: Message, command: CommandObject):
     if not c:
         await message.answer("چالش پیدا نشد.")
         return
-    rows = await db.challenge_participants(c["id"])
+    rows = await db.participants(c["id"])
     if not rows:
         await message.answer("هنوز کسی در این چالش شرکت نکرده است.")
         return
     lines = [f"👥 <b>شرکت‌کنندگان چالش #{c['id']}</b> ({len(rows)} نفر)\n"]
-    lines += [f"{i}. {_user_line(r)}" for i, r in enumerate(rows, 1)]
+    lines += [f"{i}. {svc.user_link(r)}" for i, r in enumerate(rows, 1)]
+    if c["status"] == "drawn":
+        lines.append("\n🏆 <b>برندگان:</b>")
+        lines += [f"• {svc.user_link(w)}" for w in await db.challenge_winners(c["id"])]
     chunk = ""
     for line in lines:
         if len(chunk) + len(line) > 3800:
@@ -253,28 +333,60 @@ async def cmd_parts(message: Message, command: CommandObject):
 async def cmd_draw(message: Message, command: CommandObject, bot: Bot):
     parts = (command.args or "").split()
     if not parts or not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
-        await message.answer("فرمت: /draw ID تعداد\nمثال: /draw 3 2")
+        await message.answer("فرمت: /draw ID [تعداد برنده]\nمثال: /draw 3")
         return
-    c = await db.get_challenge(int(parts[0]))
-    if not c:
-        await message.answer("چالش پیدا نشد.")
+    count = int(parts[1]) if len(parts) > 1 else None
+    await message.answer("🎲 در حال قرعه‌کشی...")
+    result = await svc.draw(bot, int(parts[0]), count)
+    if result is None:
+        await message.answer("❌ چالش باز با این شناسه پیدا نشد (شاید قبلاً قرعه‌کشی یا لغو شده).")
+
+
+async def _do_cancel(message: Message, bot: Bot, challenge_id: int, reason: str) -> None:
+    ok, n = await svc.cancel(bot, challenge_id, reason)
+    if ok:
+        await message.answer(
+            f"🚫 چالش #{challenge_id} لغو شد.\n"
+            f"👥 {n} شرکت‌کننده (هزینه شرکت در صورت وجود برگشت داده شد).\n"
+            "📨 اعلان لغو در حال ارسال به همه کاربران ربات است..."
+        )
+    else:
+        await message.answer("❌ چالش باز با این شناسه پیدا نشد.")
+
+
+@router.message(Command("cancelch"))
+async def cmd_cancelch(message: Message, command: CommandObject, bot: Bot):
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) != 2 or not parts[0].isdigit():
+        await message.answer("فرمت: /cancelch ID دلیل\nمثال: <code>/cancelch 3 مشکل فنی در تأمین جایزه</code>")
         return
-    count = int(parts[1]) if len(parts) > 1 else 1
-    winners = await db.draw_winners(c["id"], max(count, 1))
-    if not winners:
-        await message.answer("کسی در این چالش شرکت نکرده است.")
+    await _do_cancel(message, bot, int(parts[0]), parts[1].strip())
+
+
+@router.callback_query(F.data.startswith("chcancel:"))
+async def cb_cancel_challenge(call: CallbackQuery, state: FSMContext):
+    challenge_id = int(call.data.split(":")[1])
+    c = await db.get_challenge(challenge_id)
+    if not c or c["status"] != "open":
+        await call.answer("این چالش قابل لغو نیست.", show_alert=True)
         return
-    for w in winners:
-        try:
-            await bot.send_message(
-                w["user_id"], t(w["lang"], "ch_winner", title=escape(c["title"]), prize=escape(c["prize"]))
-            )
-        except Exception as e:
-            log.info("Could not notify winner %s: %s", w["user_id"], e)
-    lines = [f"🎉 <b>برندگان چالش #{c['id']}</b> — {escape(c['title'])}\n"]
-    lines += [f"{i}. {_user_line(w)}" for i, w in enumerate(winners, 1)]
-    lines.append("\n📨 به برنده‌ها پیام تبریک ارسال شد.")
-    await message.answer("\n".join(lines))
+    await state.set_state(CancelState.reason)
+    await state.update_data(challenge_id=challenge_id)
+    await call.answer()
+    await call.message.edit_text(
+        f"🛑 لغو چالش #{challenge_id} — {escape(c['title'])}\n\n"
+        "✍️ دلیل لغو را بنویس و ارسال کن. این دلیل برای همه کاربران ربات ارسال می‌شود.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ انصراف", callback_data=f"ch:{challenge_id}")]
+        ]),
+    )
+
+
+@router.message(CancelState.reason, F.text, ~F.text.startswith("/"))
+async def msg_cancel_reason(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    await _do_cancel(message, bot, data["challenge_id"], message.text.strip())
 
 
 @router.message(Command("broadcast"))

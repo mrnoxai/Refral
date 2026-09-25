@@ -32,6 +32,8 @@ if not CHANNEL_LINK and isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith("@
 REF_REWARD: int = int(os.getenv("REF_REWARD", "1"))
 DEFAULT_LANG: str = os.getenv("DEFAULT_LANG", "fa").strip() or "fa"
 DB_PATH: str = os.getenv("DB_PATH", "data/bot.db").strip()
+# پیش‌فرض محدودیت شرکت برای برندگان اخیر (ساعت) — 0 یعنی بدون محدودیت
+DEFAULT_WIN_COOLDOWN: int = int(os.getenv("DEFAULT_WIN_COOLDOWN", "24"))
 # منطقه زمانی برای نمایش تاریخ پایان چالش‌ها
 TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Tehran").strip() or "Asia/Tehran"
 

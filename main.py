@@ -8,6 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 import config
+import challenge_service as svc
 import database as db
 from handlers_admin import router as admin_router
 from handlers_user import router as user_router
@@ -34,6 +35,7 @@ async def main() -> None:
 
     await bot.set_my_commands([BotCommand(command="start", description="🏠 منوی اصلی / Main menu")])
     await bot.delete_webhook(drop_pending_updates=True)
+    svc.run_background(svc.scheduler(bot))  # قرعه‌کشی خودکار چالش‌ها
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:

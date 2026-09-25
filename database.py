@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -7,6 +9,16 @@ import aiosqlite
 import config
 
 _db: aiosqlite.Connection | None = None
+_lock = asyncio.Lock()
+
+
+def _locked(func):
+    """همه نوشتن‌ها پشت یک قفل اجرا می‌شوند تا تراکنش‌ها قاطی نشوند."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        async with _lock:
+            return await func(*args, **kwargs)
+    return wrapper
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -59,6 +71,13 @@ CREATE TABLE IF NOT EXISTS participants (
     joined_at    TEXT,
     PRIMARY KEY (challenge_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS winners (
+    challenge_id INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    won_at       TEXT    NOT NULL,
+    PRIMARY KEY (challenge_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_winners_user ON winners(user_id, won_at);
 CREATE TABLE IF NOT EXISTS support_map (
     admin_chat_id INTEGER NOT NULL,
     admin_msg_id  INTEGER NOT NULL,
@@ -66,6 +85,17 @@ CREATE TABLE IF NOT EXISTS support_map (
     PRIMARY KEY (admin_chat_id, admin_msg_id)
 );
 """
+
+
+CHALLENGE_COLUMNS = {
+    "status": "TEXT NOT NULL DEFAULT 'open'",          # open | drawing | drawn | cancelled
+    "winners_count": "INTEGER NOT NULL DEFAULT 1",
+    "max_participants": "INTEGER NOT NULL DEFAULT 0",  # 0 = نامحدود
+    "win_cooldown": "INTEGER NOT NULL DEFAULT 0",      # ساعت؛ 0 = بدون محدودیت
+    "min_refs": "INTEGER NOT NULL DEFAULT 0",
+    "cancel_reason": "TEXT",
+    "drawn_at": "TEXT",
+}
 
 
 def _now() -> str:
@@ -81,6 +111,14 @@ async def init() -> None:
     _db.row_factory = aiosqlite.Row
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.executescript(SCHEMA)
+    # مهاجرت: ستون‌های جدید چالش‌ها روی دیتابیس قبلی اضافه می‌شوند
+    async with _db.execute("PRAGMA table_info(challenges)") as cur:
+        existing = {r["name"] for r in await cur.fetchall()}
+    for col, ddl in CHALLENGE_COLUMNS.items():
+        if col not in existing:
+            await _db.execute(f"ALTER TABLE challenges ADD COLUMN {col} {ddl}")
+    # اگر ربات وسط قرعه‌کشی ری‌استارت شده باشد
+    await _db.execute("UPDATE challenges SET status='open' WHERE status='drawing'")
     await _db.commit()
 
 
@@ -104,6 +142,7 @@ async def get_user(user_id: int):
     return await _one("SELECT * FROM users WHERE user_id=?", user_id)
 
 
+@_locked
 async def create_user(user_id, username, first_name, lang, referred_by=None) -> None:
     await _db.execute(
         "INSERT OR IGNORE INTO users(user_id, username, first_name, lang, referred_by, joined_at) "
@@ -113,6 +152,7 @@ async def create_user(user_id, username, first_name, lang, referred_by=None) -> 
     await _db.commit()
 
 
+@_locked
 async def update_user_info(user_id, username, first_name) -> None:
     await _db.execute(
         "UPDATE users SET username=?, first_name=? WHERE user_id=?", (username, first_name, user_id)
@@ -120,17 +160,20 @@ async def update_user_info(user_id, username, first_name) -> None:
     await _db.commit()
 
 
+@_locked
 async def set_lang(user_id: int, lang: str) -> None:
     await _db.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user_id))
     await _db.commit()
 
 
+@_locked
 async def add_tokens(user_id: int, amount: int) -> bool:
     cur = await _db.execute("UPDATE users SET tokens=MAX(tokens+?, 0) WHERE user_id=?", (amount, user_id))
     await _db.commit()
     return cur.rowcount == 1
 
 
+@_locked
 async def credit_referral(user_id: int, reward: int):
     """اگر کاربر رفرال پرداخت‌نشده داشته باشد، به معرف توکن می‌دهد و آیدی معرف را برمی‌گرداند."""
     row = await _one("SELECT referred_by, ref_credited FROM users WHERE user_id=?", user_id)
@@ -150,6 +193,10 @@ async def credit_referral(user_id: int, reward: int):
     return row["referred_by"]
 
 
+async def all_users_lang():
+    return await _all("SELECT user_id, lang FROM users")
+
+
 async def all_user_ids() -> list[int]:
     rows = await _all("SELECT user_id FROM users")
     return [r["user_id"] for r in rows]
@@ -158,7 +205,7 @@ async def all_user_ids() -> list[int]:
 async def stats() -> dict:
     users = await _one("SELECT COUNT(*) AS c, COALESCE(SUM(tokens),0) AS t FROM users")
     refs = await _one("SELECT COUNT(*) AS c FROM users WHERE ref_credited=1")
-    ch = await _one("SELECT COUNT(*) AS c FROM challenges WHERE active=1")
+    ch = await _one("SELECT COUNT(*) AS c FROM challenges WHERE active=1 AND status='open'")
     parts = await _one("SELECT COUNT(*) AS c FROM participants")
     return {"users": users["c"], "tokens": users["t"], "refs": refs["c"],
             "challenges": ch["c"], "participants": parts["c"]}
@@ -173,6 +220,7 @@ async def top_referrers(limit: int = 10):
 
 
 # ---------------- gift codes ----------------
+@_locked
 async def add_code(code: str, amount: int, max_uses: int) -> None:
     await _db.execute(
         "INSERT OR REPLACE INTO gift_codes(code, amount, max_uses, used_count) VALUES(?,?,?,0)",
@@ -181,6 +229,7 @@ async def add_code(code: str, amount: int, max_uses: int) -> None:
     await _db.commit()
 
 
+@_locked
 async def del_code(code: str) -> bool:
     cur = await _db.execute("DELETE FROM gift_codes WHERE code=?", (code,))
     await _db.commit()
@@ -191,6 +240,7 @@ async def list_codes():
     return await _all("SELECT * FROM gift_codes ORDER BY code")
 
 
+@_locked
 async def redeem_code(code: str, user_id: int):
     c = await _one("SELECT * FROM gift_codes WHERE code=?", code)
     if not c:
@@ -217,25 +267,46 @@ async def redeem_code(code: str, user_id: int):
 
 # ---------------- challenges ----------------
 _CNT = "(SELECT COUNT(*) FROM participants p WHERE p.challenge_id=c.id) AS cnt"
+EDITABLE = {"winners_count", "cost", "max_participants", "win_cooldown", "min_refs"}
 
 
-async def add_challenge(title: str, prize: str, description: str, cost: int, end_at: str) -> int:
+@_locked
+async def add_challenge(title, prize, description, end_at, cost=0, winners_count=1,
+                        max_participants=0, win_cooldown=0, min_refs=0) -> int:
     cur = await _db.execute(
-        "INSERT INTO challenges(title, prize, description, cost, end_at, created_at) VALUES(?,?,?,?,?,?)",
-        (title, prize, description, cost, end_at, _now()),
+        "INSERT INTO challenges(title, prize, description, cost, end_at, created_at, status, "
+        "winners_count, max_participants, win_cooldown, min_refs) VALUES(?,?,?,?,?,?,'open',?,?,?,?)",
+        (title, prize, description, cost, end_at, _now(), winners_count, max_participants, win_cooldown, min_refs),
     )
     await _db.commit()
     return cur.lastrowid
 
 
+@_locked
+async def update_challenge(challenge_id: int, fields: dict) -> bool:
+    fields = {k: v for k, v in fields.items() if k in EDITABLE}
+    if not fields:
+        return False
+    sets = ", ".join(f"{k}=?" for k in fields)
+    cur = await _db.execute(
+        f"UPDATE challenges SET {sets} WHERE id=? AND active=1", (*fields.values(), challenge_id)
+    )
+    await _db.commit()
+    return cur.rowcount == 1
+
+
+@_locked
 async def del_challenge(challenge_id: int) -> bool:
     cur = await _db.execute("UPDATE challenges SET active=0 WHERE id=? AND active=1", (challenge_id,))
     await _db.commit()
     return cur.rowcount == 1
 
 
+@_locked
 async def set_challenge_end(challenge_id: int, end_at: str) -> bool:
-    cur = await _db.execute("UPDATE challenges SET end_at=? WHERE id=? AND active=1", (end_at, challenge_id))
+    cur = await _db.execute(
+        "UPDATE challenges SET end_at=? WHERE id=? AND active=1 AND status='open'", (end_at, challenge_id)
+    )
     await _db.commit()
     return cur.rowcount == 1
 
@@ -245,18 +316,26 @@ async def get_challenge(challenge_id: int):
 
 
 async def list_open_challenges(now: str, user_id: int):
-    """چالش‌های فعال و تمام‌نشده + تعداد شرکت‌کننده + اینکه کاربر شرکت کرده یا نه."""
+    """چالش‌های باز و تمام‌نشده + تعداد شرکت‌کننده + اینکه کاربر شرکت کرده یا نه."""
     return await _all(
         f"SELECT c.*, {_CNT}, "
         "EXISTS(SELECT 1 FROM participants p WHERE p.challenge_id=c.id AND p.user_id=?) AS joined "
-        "FROM challenges c WHERE c.active=1 AND c.end_at>? ORDER BY c.end_at",
+        "FROM challenges c WHERE c.active=1 AND c.status='open' AND c.end_at>? ORDER BY c.end_at",
         user_id,
         now,
     )
 
 
-async def list_all_challenges():
-    return await _all(f"SELECT c.*, {_CNT} FROM challenges c WHERE c.active=1 ORDER BY c.id DESC")
+async def list_all_challenges(limit: int = 30):
+    return await _all(
+        f"SELECT c.*, {_CNT} FROM challenges c WHERE c.active=1 ORDER BY c.id DESC LIMIT ?", limit
+    )
+
+
+async def due_challenges(now: str):
+    return await _all(
+        "SELECT id FROM challenges WHERE active=1 AND status='open' AND end_at<=? ORDER BY end_at", now
+    )
 
 
 async def has_joined(challenge_id: int, user_id: int) -> bool:
@@ -265,43 +344,59 @@ async def has_joined(challenge_id: int, user_id: int) -> bool:
     ))
 
 
-async def join_challenge(challenge_id: int, user_id: int, now: str) -> str:
-    c = await get_challenge(challenge_id)
-    if not c:
-        return "not_found"
-    if c["end_at"] <= now:
-        return "ended"
-    if await has_joined(challenge_id, user_id):
-        return "already"
-    if c["cost"] > 0:
+async def has_won(challenge_id: int, user_id: int) -> bool:
+    return bool(await _one("SELECT 1 FROM winners WHERE challenge_id=? AND user_id=?", challenge_id, user_id))
+
+
+async def last_win(user_id: int):
+    row = await _one("SELECT MAX(won_at) AS w FROM winners WHERE user_id=?", user_id)
+    return row["w"] if row else None
+
+
+@_locked
+async def try_join(challenge_id: int, user_id: int, cost: int, max_participants: int, now: str) -> str:
+    """کسر هزینه + ثبت شرکت به‌صورت اتمیک. خروجی: ok | insufficient | already | full"""
+    if cost > 0:
         cur = await _db.execute(
-            "UPDATE users SET tokens=tokens-? WHERE user_id=? AND tokens>=?",
-            (c["cost"], user_id, c["cost"]),
+            "UPDATE users SET tokens=tokens-? WHERE user_id=? AND tokens>=?", (cost, user_id, cost)
         )
         if cur.rowcount != 1:
-            await _db.commit()
+            await _db.rollback()
             return "insufficient"
     try:
-        await _db.execute(
-            "INSERT INTO participants(challenge_id, user_id, joined_at) VALUES(?,?,?)",
-            (challenge_id, user_id, _now()),
+        cur = await _db.execute(
+            "INSERT INTO participants(challenge_id, user_id, joined_at) SELECT ?,?,? "
+            "WHERE ?=0 OR (SELECT COUNT(*) FROM participants WHERE challenge_id=?) < ?",
+            (challenge_id, user_id, now, max_participants, challenge_id, max_participants),
         )
     except sqlite3.IntegrityError:
         await _db.rollback()
         return "already"
+    if cur.rowcount != 1:
+        await _db.rollback()
+        return "full"
     await _db.commit()
     return "ok"
 
 
-async def challenge_participants(challenge_id: int):
+async def participants(challenge_id: int):
     return await _all(
-        "SELECT u.user_id, u.first_name, u.username, p.joined_at FROM participants p "
-        "LEFT JOIN users u ON u.user_id=p.user_id WHERE p.challenge_id=? ORDER BY p.joined_at",
+        "SELECT u.user_id, u.first_name, u.username, u.lang, p.joined_at FROM participants p "
+        "JOIN users u ON u.user_id=p.user_id WHERE p.challenge_id=? ORDER BY p.joined_at",
         challenge_id,
     )
 
 
-async def draw_winners(challenge_id: int, count: int):
+@_locked
+async def start_draw(challenge_id: int) -> bool:
+    cur = await _db.execute(
+        "UPDATE challenges SET status='drawing' WHERE id=? AND active=1 AND status='open'", (challenge_id,)
+    )
+    await _db.commit()
+    return cur.rowcount == 1
+
+
+async def pick_random(challenge_id: int, count: int):
     return await _all(
         "SELECT u.user_id, u.first_name, u.username, u.lang FROM participants p "
         "JOIN users u ON u.user_id=p.user_id WHERE p.challenge_id=? ORDER BY RANDOM() LIMIT ?",
@@ -310,7 +405,45 @@ async def draw_winners(challenge_id: int, count: int):
     )
 
 
+@_locked
+async def finish_draw(challenge_id: int, winner_ids: list[int], now: str) -> None:
+    for uid in winner_ids:
+        await _db.execute(
+            "INSERT OR IGNORE INTO winners(challenge_id, user_id, won_at) VALUES(?,?,?)", (challenge_id, uid, now)
+        )
+    await _db.execute("UPDATE challenges SET status='drawn', drawn_at=? WHERE id=?", (now, challenge_id))
+    await _db.commit()
+
+
+@_locked
+async def cancel_challenge(challenge_id: int, reason: str) -> bool:
+    """لغو چالش باز + برگشت هزینه شرکت به شرکت‌کنندگان."""
+    c = await _one("SELECT cost FROM challenges WHERE id=? AND active=1 AND status='open'", challenge_id)
+    if not c:
+        return False
+    await _db.execute(
+        "UPDATE challenges SET status='cancelled', cancel_reason=? WHERE id=?", (reason, challenge_id)
+    )
+    if c["cost"] > 0:
+        await _db.execute(
+            "UPDATE users SET tokens=tokens+? WHERE user_id IN "
+            "(SELECT user_id FROM participants WHERE challenge_id=?)",
+            (c["cost"], challenge_id),
+        )
+    await _db.commit()
+    return True
+
+
+async def challenge_winners(challenge_id: int):
+    return await _all(
+        "SELECT u.user_id, u.first_name, u.username FROM winners w "
+        "JOIN users u ON u.user_id=w.user_id WHERE w.challenge_id=?",
+        challenge_id,
+    )
+
+
 # ---------------- support ----------------
+@_locked
 async def save_support_map(admin_chat_id: int, admin_msg_id: int, user_id: int) -> None:
     await _db.execute(
         "INSERT OR REPLACE INTO support_map(admin_chat_id, admin_msg_id, user_id) VALUES(?,?,?)",

@@ -49,12 +49,14 @@ def challenges(lang: str, items: list[tuple[int, str]]) -> M:
     return M(inline_keyboard=rows)
 
 
-def challenge_detail(lang: str, challenge_id: int, can_join: bool) -> M:
+def challenge_detail(lang: str, challenge_id: int, can_join: bool, admin_can_cancel: bool = False) -> M:
     rows = []
     if can_join:
         rows.append([B(text=t(lang, "btn_join_ch"), callback_data=f"chjoin:{challenge_id}")])
     rows.append([B(text=t(lang, "btn_refresh"), callback_data=f"ch:{challenge_id}"),
                  B(text=t(lang, "btn_back_list"), callback_data="challenges")])
+    if admin_can_cancel:
+        rows.append([B(text=t(lang, "btn_cancel_ch"), callback_data=f"chcancel:{challenge_id}")])
     return M(inline_keyboard=rows)
 
 

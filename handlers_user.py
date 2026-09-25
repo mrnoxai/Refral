@@ -13,6 +13,7 @@ import config
 import database as db
 import keyboards as kb
 from texts import LANGS, t
+import challenge_service as svc
 from timeutils import is_ended, local_now_hm, local_str, now_db, remaining
 
 router = Router()
@@ -219,6 +220,10 @@ def cost_text(lang: str, cost: int) -> str:
     return t(lang, "free") if cost <= 0 else t(lang, "cost_tokens", n=cost)
 
 
+def count_text(c) -> str:
+    return f"{c['cnt']} / {c['max_participants']}" if c["max_participants"] else str(c["cnt"])
+
+
 async def render_challenges(call: CallbackQuery, user) -> None:
     lang = user["lang"]
     items = await db.list_open_challenges(now_db(), user["user_id"])
@@ -228,7 +233,7 @@ async def render_challenges(call: CallbackQuery, user) -> None:
     buttons = []
     for c in items:
         mark = "✅ " if c["joined"] else ""
-        label = f"{mark}{c['title']} · 👥 {c['cnt']} · ⏳ {remaining(c['end_at'], lang)}"
+        label = f"{mark}{c['title']} · 👥 {count_text(c)} · ⏳ {remaining(c['end_at'], lang)}"
         buttons.append((c["id"], label))
     await safe_edit(
         call,
@@ -242,28 +247,60 @@ async def render_challenge(call: CallbackQuery, user, challenge_id: int) -> bool
     c = await db.get_challenge(challenge_id)
     if not c:
         return False
-    joined = await db.has_joined(challenge_id, user["user_id"])
-    ended = is_ended(c["end_at"])
-    status = "ch_status_ended" if ended else ("ch_status_joined" if joined else "ch_status_open")
-    desc = t(lang, "ch_desc", text=escape(c["description"])) if c["description"] else ""
+    uid = user["user_id"]
+    joined = await db.has_joined(challenge_id, uid)
+    is_open = c["status"] == "open" and not is_ended(c["end_at"])
+
+    if c["status"] == "cancelled":
+        status = t(lang, "ch_status_cancelled", reason=escape(c["cancel_reason"] or "-"))
+    elif c["status"] == "drawn":
+        if await db.has_won(challenge_id, uid):
+            status = t(lang, "ch_status_won")
+        elif joined:
+            status = t(lang, "ch_status_lost")
+        else:
+            status = t(lang, "ch_status_drawn")
+    elif not is_open:
+        status = t(lang, "ch_status_ended")
+    elif joined:
+        status = t(lang, "ch_status_joined")
+    else:
+        status = t(lang, "ch_status_open")
+
+    rules = []
+    if c["win_cooldown"]:
+        rules.append(t(lang, "rule_cooldown", h=c["win_cooldown"]))
+    if c["min_refs"]:
+        rules.append(t(lang, "rule_refs", n=c["min_refs"]))
+    if c["max_participants"]:
+        rules.append(t(lang, "rule_capacity", n=c["max_participants"]))
+
     text = t(
         lang, "ch_detail",
         title=escape(c["title"]),
         prize=escape(c["prize"]),
-        desc=desc,
-        count=c["cnt"],
+        winners=c["winners_count"],
+        desc=t(lang, "ch_desc", text=escape(c["description"])) if c["description"] else "",
+        count=count_text(c),
         left=remaining(c["end_at"], lang),
         end=local_str(c["end_at"]),
         cost=cost_text(lang, c["cost"]),
         tokens=user["tokens"],
-        status=t(lang, status),
+        rules=t(lang, "ch_rules", lines="\n".join(rules)) if rules else "",
+        status=status,
     )
-    await safe_edit(call, text, kb.challenge_detail(lang, challenge_id, can_join=not ended and not joined))
+    markup = kb.challenge_detail(
+        lang, challenge_id,
+        can_join=is_open and not joined,
+        admin_can_cancel=c["status"] == "open" and uid in config.ADMIN_IDS,
+    )
+    await safe_edit(call, text, markup)
     return True
 
 
 @router.callback_query(F.data.in_({"challenges", "ch_refresh"}))
-async def cb_challenges(call: CallbackQuery, bot: Bot):
+async def cb_challenges(call: CallbackQuery, state: FSMContext, bot: Bot):
+    await state.clear()
     user = await guard(call, bot)
     if not user:
         return
@@ -275,7 +312,8 @@ async def cb_challenges(call: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data.startswith("ch:"))
-async def cb_challenge_detail(call: CallbackQuery, bot: Bot):
+async def cb_challenge_detail(call: CallbackQuery, state: FSMContext, bot: Bot):
+    await state.clear()
     user = await guard(call, bot)
     if not user:
         return
@@ -294,15 +332,21 @@ async def cb_challenge_join(call: CallbackQuery, bot: Bot):
         return
     lang = user["lang"]
     challenge_id = int(call.data.split(":")[1])
-    status = await db.join_challenge(challenge_id, user["user_id"], now_db())
-    messages = {
-        "ok": "ch_join_ok",
-        "already": "ch_already",
-        "insufficient": "ch_insufficient",
-        "ended": "ch_ended",
-        "not_found": "ch_not_found",
-    }
-    await call.answer(t(lang, messages[status]), show_alert=True)
+    status, info = await svc.join(challenge_id, user)
+    if status == "min_refs":
+        msg = t(lang, "ch_min_refs", **info)
+    elif status == "cooldown":
+        msg = t(lang, "ch_cooldown", left=svc.cooldown_left(info, lang))
+    else:
+        msg = t(lang, {
+            "ok": "ch_join_ok",
+            "already": "ch_already",
+            "insufficient": "ch_insufficient",
+            "ended": "ch_ended",
+            "full": "ch_full",
+            "not_found": "ch_not_found",
+        }[status])
+    await call.answer(msg, show_alert=True)
     user = await db.get_user(user["user_id"])
     if not await render_challenge(call, user, challenge_id):
         await render_challenges(call, user)

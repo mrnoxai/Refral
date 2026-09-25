@@ -15,6 +15,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_join_ch": "✅ ثبت شرکت",
         "btn_refresh": "🔄 بروزرسانی",
         "btn_back_list": "🔙 لیست چالش‌ها",
+        "btn_cancel_ch": "🛑 لغو چالش (ادمین)",
         # پیام‌ها
         "welcome": (
             "سلام {name} 👋\n"
@@ -71,30 +72,54 @@ TEXTS: dict[str, dict[str, str]] = {
         "ch_detail": (
             "🏆 <b>{title}</b>\n\n"
             "🎁 جایزه: <b>{prize}</b>\n"
+            "🏅 تعداد برندگان: <b>{winners}</b> نفر\n"
             "{desc}"
-            "👥 تعداد شرکت‌کنندگان: <b>{count}</b> نفر\n"
+            "👥 شرکت‌کنندگان: <b>{count}</b> نفر\n"
             "⏳ زمان باقی‌مانده: <b>{left}</b>\n"
-            "🗓 پایان: {end}\n"
+            "🗓 پایان و قرعه‌کشی: {end}\n"
             "💰 هزینه شرکت: <b>{cost}</b>\n"
             "🪙 موجودی تو: {tokens} توکن\n\n"
+            "{rules}"
             "{status}"
         ),
-        "ch_desc": "📝 {text}\n\n",
+        "ch_desc": "📝 {text}\n",
+        "ch_rules": "⚠️ <b>شرایط شرکت:</b>\n{lines}\n\n",
+        "rule_cooldown": "• برندگان {h} ساعت اخیر نمی‌توانند شرکت کنند",
+        "rule_refs": "• حداقل {n} رفرال موفق لازم است",
+        "rule_capacity": "• ظرفیت: {n} نفر",
         "ch_status_open": "👇 برای شرکت در این چالش روی «✅ ثبت شرکت» بزن.",
-        "ch_status_joined": "✅ تو در این چالش شرکت کرده‌ای. موفق باشی!",
-        "ch_status_ended": "⛔️ زمان شرکت در این چالش تمام شده است.",
-        "ch_join_ok": "🎉 ثبت شرکت انجام شد! با موفقیت در چالش شرکت کردی.",
+        "ch_status_joined": "✅ تو در این چالش شرکت کرده‌ای. نتیجه قرعه‌کشی برایت ارسال می‌شود. موفق باشی!",
+        "ch_status_ended": "⏳ زمان شرکت تمام شد؛ قرعه‌کشی به‌زودی انجام می‌شود.",
+        "ch_status_drawn": "🎲 قرعه‌کشی این چالش انجام شده است.",
+        "ch_status_won": "🎲 قرعه‌کشی انجام شد و 🏆 <b>تو برنده این چالش شدی!</b>",
+        "ch_status_lost": "🎲 قرعه‌کشی انجام شد؛ این بار برنده نشدی.",
+        "ch_status_cancelled": "🚫 این چالش لغو شد.\n📝 دلیل: {reason}",
+        "ch_join_ok": "🎉 ثبت شرکت انجام شد! نتیجه قرعه‌کشی بعد از پایان چالش برایت ارسال می‌شود.",
         "ch_already": "✅ قبلاً در این چالش شرکت کرده‌ای.",
         "ch_insufficient": "❌ موجودی توکن برای شرکت در این چالش کافی نیست.",
-        "ch_ended": "⛔️ زمان این چالش تمام شده است.",
+        "ch_ended": "⛔️ زمان شرکت در این چالش تمام شده است.",
         "ch_not_found": "❌ این چالش دیگر وجود ندارد.",
+        "ch_full": "❌ ظرفیت این چالش تکمیل شده است.",
+        "ch_min_refs": "❌ برای شرکت در این چالش حداقل {n} رفرال موفق لازم است. (رفرال‌های تو: {have})",
+        "ch_cooldown": "⏳ چون اخیراً در یک چالش برنده شده‌ای، فعلاً نمی‌توانی در این چالش شرکت کنی.\nزمان باقی‌مانده: {left}",
         "ch_refreshed": "🔄 بروزرسانی شد",
         "ch_winner": (
             "🎉 <b>تبریک!</b>\n\n"
-            "تو برنده چالش «{title}» شدی! 🏆\n"
+            "تو در قرعه‌کشی چالش «<b>{title}</b>» برنده شدی! 🏆\n"
             "🎁 جایزه: <b>{prize}</b>\n\n"
             "به‌زودی پشتیبانی برای تحویل جایزه با تو در ارتباط خواهد بود."
         ),
+        "ch_loser": (
+            "🎲 قرعه‌کشی چالش «<b>{title}</b>» انجام شد.\n\n"
+            "😔 متأسفانه این بار برنده نشدی.\n"
+            "🏅 تعداد برندگان: {winners} نفر از {total} شرکت‌کننده\n\n"
+            "ناامید نشو؛ در چالش‌های بعدی شرکت کن! 💪"
+        ),
+        "ch_cancelled": (
+            "🚫 <b>چالش «{title}» لغو شد.</b>\n\n"
+            "📝 دلیل: {reason}"
+        ),
+        "ch_refund": "\n\n🪙 {n} توکن هزینه شرکت به حسابت برگشت داده شد.",
         "free": "رایگان",
         "cost_tokens": "{n} توکن",
         "ended_short": "پایان یافته",
@@ -124,6 +149,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_join_ch": "✅ Join challenge",
         "btn_refresh": "🔄 Refresh",
         "btn_back_list": "🔙 Challenges",
+        "btn_cancel_ch": "🛑 Cancel challenge (admin)",
         "welcome": (
             "Hi {name} 👋\n"
             "Welcome to the referral bot!\n\n"
@@ -179,30 +205,54 @@ TEXTS: dict[str, dict[str, str]] = {
         "ch_detail": (
             "🏆 <b>{title}</b>\n\n"
             "🎁 Prize: <b>{prize}</b>\n"
+            "🏅 Winners: <b>{winners}</b>\n"
             "{desc}"
             "👥 Participants: <b>{count}</b>\n"
             "⏳ Time left: <b>{left}</b>\n"
-            "🗓 Ends: {end}\n"
+            "🗓 Ends &amp; draw: {end}\n"
             "💰 Entry cost: <b>{cost}</b>\n"
             "🪙 Your balance: {tokens} tokens\n\n"
+            "{rules}"
             "{status}"
         ),
-        "ch_desc": "📝 {text}\n\n",
+        "ch_desc": "📝 {text}\n",
+        "ch_rules": "⚠️ <b>Requirements:</b>\n{lines}\n\n",
+        "rule_cooldown": "• Winners from the last {h} hours can't join",
+        "rule_refs": "• At least {n} successful referrals required",
+        "rule_capacity": "• Capacity: {n} people",
         "ch_status_open": "👇 Tap “✅ Join challenge” to take part.",
-        "ch_status_joined": "✅ You have joined this challenge. Good luck!",
-        "ch_status_ended": "⛔️ This challenge is closed.",
-        "ch_join_ok": "🎉 You have successfully joined the challenge!",
+        "ch_status_joined": "✅ You have joined this challenge. You'll get the draw result here. Good luck!",
+        "ch_status_ended": "⏳ Entry is closed; the draw will happen shortly.",
+        "ch_status_drawn": "🎲 The draw for this challenge is done.",
+        "ch_status_won": "🎲 The draw is done and 🏆 <b>you won this challenge!</b>",
+        "ch_status_lost": "🎲 The draw is done; you didn't win this time.",
+        "ch_status_cancelled": "🚫 This challenge was cancelled.\n📝 Reason: {reason}",
+        "ch_join_ok": "🎉 You've joined! You'll get the draw result when the challenge ends.",
         "ch_already": "✅ You have already joined this challenge.",
         "ch_insufficient": "❌ You don't have enough tokens to join this challenge.",
-        "ch_ended": "⛔️ This challenge has ended.",
+        "ch_ended": "⛔️ Entry to this challenge is closed.",
         "ch_not_found": "❌ This challenge no longer exists.",
+        "ch_full": "❌ This challenge is full.",
+        "ch_min_refs": "❌ You need at least {n} successful referrals to join. (You have {have})",
+        "ch_cooldown": "⏳ You won a challenge recently, so you can't join this one yet.\nTime left: {left}",
         "ch_refreshed": "🔄 Refreshed",
         "ch_winner": (
             "🎉 <b>Congratulations!</b>\n\n"
-            "You won the challenge “{title}”! 🏆\n"
+            "You won the draw for “<b>{title}</b>”! 🏆\n"
             "🎁 Prize: <b>{prize}</b>\n\n"
             "Support will contact you soon to deliver your prize."
         ),
+        "ch_loser": (
+            "🎲 The draw for “<b>{title}</b>” is done.\n\n"
+            "😔 Unfortunately you didn't win this time.\n"
+            "🏅 Winners: {winners} out of {total} participants\n\n"
+            "Don't give up — join the next challenges! 💪"
+        ),
+        "ch_cancelled": (
+            "🚫 <b>The challenge “{title}” has been cancelled.</b>\n\n"
+            "📝 Reason: {reason}"
+        ),
+        "ch_refund": "\n\n🪙 Your {n} token entry fee has been refunded.",
         "free": "Free",
         "cost_tokens": "{n} tokens",
         "ended_short": "Ended",
