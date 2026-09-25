@@ -10,6 +10,7 @@ from aiogram.types import Message
 import config
 import database as db
 from texts import t
+from timeutils import local_str, now_utc, parse_duration, remaining, to_db
 
 router = Router()
 router.message.filter(F.chat.type == "private", F.from_user.id.in_(config.ADMIN_IDS))
@@ -27,10 +28,16 @@ HELP = (
     "/addcode <code>CODE AMOUNT MAX_USES</code> — ساخت کد (MAX_USES=0 یعنی نامحدود)\n"
     "/delcode <code>CODE</code> — حذف کد\n"
     "/codes — لیست کدها\n\n"
-    "<b>جوایز</b>\n"
-    "/addprize <code>COST TITLE</code> — افزودن جایزه (مثال: /addprize 10 اشتراک یک‌ماهه)\n"
-    "/delprize <code>ID</code> — حذف جایزه\n"
-    "/prizes — لیست جوایز\n\n"
+    "<b>چالش‌ها</b>\n"
+    "/addch <code>مدت هزینه عنوان | جایزه | توضیحات</code>\n"
+    "   مثال: <code>/addch 3d 0 چالش دعوت هفته | پریمیوم ۳ ماهه | بیشترین دعوت برنده است</code>\n"
+    "   مدت: <code>30m</code> دقیقه، <code>12h</code> ساعت، <code>3d</code> روز، ترکیبی: <code>1d12h</code>\n"
+    "   هزینه: توکن لازم برای شرکت (0 = رایگان) — توضیحات اختیاری است\n"
+    "/chs — لیست چالش‌ها با تعداد شرکت‌کننده\n"
+    "/settime <code>ID مدت</code> — تعیین زمان جدید (از الان)\n"
+    "/parts <code>ID</code> — لیست شرکت‌کنندگان\n"
+    "/draw <code>ID تعداد</code> — قرعه‌کشی و اعلام برنده‌ها\n"
+    "/delch <code>ID</code> — حذف چالش\n\n"
     "<b>ارسال همگانی</b>\n"
     "روی هر پیامی Reply بزن و بنویس /broadcast\n\n"
     "<b>پشتیبانی</b>\n"
@@ -51,7 +58,8 @@ async def cmd_stats(message: Message):
         f"👥 کاربران: <b>{s['users']}</b>\n"
         f"🔗 رفرال‌های موفق: <b>{s['refs']}</b>\n"
         f"🪙 مجموع توکن کاربران: <b>{s['tokens']}</b>\n"
-        f"🏆 درخواست‌های جایزه: <b>{s['claims']}</b>"
+        f"🏆 چالش‌ها: <b>{s['challenges']}</b>\n"
+        f"🙋 مجموع شرکت در چالش‌ها: <b>{s['participants']}</b>"
     )
 
 
@@ -144,35 +152,128 @@ async def cmd_codes(message: Message):
     await message.answer("\n".join(lines))
 
 
-@router.message(Command("addprize"))
-async def cmd_addprize(message: Message, command: CommandObject):
-    parts = (command.args or "").split(maxsplit=1)
-    if len(parts) != 2 or not parts[0].isdigit():
-        await message.answer("فرمت: /addprize COST TITLE\nمثال: /addprize 10 اشتراک یک‌ماهه")
+@router.message(Command("addch"))
+async def cmd_addch(message: Message, command: CommandObject):
+    usage = (
+        "فرمت: /addch مدت هزینه عنوان | جایزه | توضیحات\n"
+        "مثال: <code>/addch 3d 0 چالش دعوت هفته | پریمیوم ۳ ماهه | بیشترین دعوت برنده است</code>"
+    )
+    parts = (command.args or "").split(maxsplit=2)
+    if len(parts) != 3 or not parts[1].isdigit():
+        await message.answer(usage)
         return
-    pid = await db.add_prize(parts[1].strip(), int(parts[0]))
-    await message.answer(f"✅ جایزه با شناسه {pid} اضافه شد.")
+    duration = parse_duration(parts[0])
+    fields = [f.strip() for f in parts[2].split("|")]
+    if not duration or len(fields) < 2 or not fields[0] or not fields[1]:
+        await message.answer(usage)
+        return
+    title, prize = fields[0], fields[1]
+    description = " | ".join(fields[2:]).strip()
+    end_at = to_db(now_utc() + duration)
+    cid = await db.add_challenge(title, prize, description, int(parts[1]), end_at)
+    await message.answer(
+        f"✅ چالش #{cid} ساخته شد.\n"
+        f"🏆 {escape(title)}\n🎁 {escape(prize)}\n"
+        f"💰 هزینه: {parts[1]} توکن\n"
+        f"⏳ مدت: {remaining(end_at, 'fa')}\n🗓 پایان: {local_str(end_at)}\n\n"
+        "برای اطلاع‌رسانی به کاربران می‌توانی از /broadcast استفاده کنی."
+    )
 
 
-@router.message(Command("delprize"))
-async def cmd_delprize(message: Message, command: CommandObject):
+@router.message(Command("chs"))
+async def cmd_chs(message: Message):
+    rows = await db.list_all_challenges()
+    if not rows:
+        await message.answer("هیچ چالشی وجود ندارد.")
+        return
+    lines = ["🏆 <b>چالش‌ها</b>\n"]
+    for c in rows:
+        lines.append(
+            f"#{c['id']} — {escape(c['title'])}\n"
+            f"   🎁 {escape(c['prize'])} · 💰 {c['cost']} · 👥 {c['cnt']} نفر · ⏳ {remaining(c['end_at'], 'fa')}"
+        )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("settime"))
+async def cmd_settime(message: Message, command: CommandObject):
+    parts = (command.args or "").split()
+    duration = parse_duration(parts[1]) if len(parts) == 2 else None
+    if len(parts) != 2 or not parts[0].isdigit() or not duration:
+        await message.answer("فرمت: /settime ID مدت\nمثال: /settime 3 2d")
+        return
+    end_at = to_db(now_utc() + duration)
+    ok = await db.set_challenge_end(int(parts[0]), end_at)
+    await message.answer(f"✅ پایان جدید: {local_str(end_at)}" if ok else "چالش پیدا نشد.")
+
+
+@router.message(Command("delch"))
+async def cmd_delch(message: Message, command: CommandObject):
     arg = (command.args or "").strip()
     if not arg.isdigit():
-        await message.answer("فرمت: /delprize ID")
+        await message.answer("فرمت: /delch ID")
         return
-    ok = await db.del_prize(int(arg))
-    await message.answer("✅ حذف شد." if ok else "جایزه پیدا نشد.")
+    ok = await db.del_challenge(int(arg))
+    await message.answer("✅ چالش حذف شد." if ok else "چالش پیدا نشد.")
 
 
-@router.message(Command("prizes"))
-async def cmd_prizes(message: Message):
-    rows = await db.list_prizes()
+def _user_line(r) -> str:
+    uname = f"@{r['username']}" if r["username"] else "-"
+    name = escape(r["first_name"] or str(r["user_id"]))
+    return f"<a href=\"tg://user?id={r['user_id']}\">{name}</a> ({uname}) <code>{r['user_id']}</code>"
+
+
+@router.message(Command("parts"))
+async def cmd_parts(message: Message, command: CommandObject):
+    arg = (command.args or "").strip()
+    if not arg.isdigit():
+        await message.answer("فرمت: /parts ID")
+        return
+    c = await db.get_challenge(int(arg))
+    if not c:
+        await message.answer("چالش پیدا نشد.")
+        return
+    rows = await db.challenge_participants(c["id"])
     if not rows:
-        await message.answer("هیچ جایزه‌ای تعریف نشده است.")
+        await message.answer("هنوز کسی در این چالش شرکت نکرده است.")
         return
-    lines = ["🏆 <b>جوایز</b>\n"]
-    for r in rows:
-        lines.append(f"#{r['id']} — {escape(r['title'])} — {r['cost']} توکن")
+    lines = [f"👥 <b>شرکت‌کنندگان چالش #{c['id']}</b> ({len(rows)} نفر)\n"]
+    lines += [f"{i}. {_user_line(r)}" for i, r in enumerate(rows, 1)]
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) > 3800:
+            await message.answer(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        await message.answer(chunk)
+
+
+@router.message(Command("draw"))
+async def cmd_draw(message: Message, command: CommandObject, bot: Bot):
+    parts = (command.args or "").split()
+    if not parts or not parts[0].isdigit() or (len(parts) > 1 and not parts[1].isdigit()):
+        await message.answer("فرمت: /draw ID تعداد\nمثال: /draw 3 2")
+        return
+    c = await db.get_challenge(int(parts[0]))
+    if not c:
+        await message.answer("چالش پیدا نشد.")
+        return
+    count = int(parts[1]) if len(parts) > 1 else 1
+    winners = await db.draw_winners(c["id"], max(count, 1))
+    if not winners:
+        await message.answer("کسی در این چالش شرکت نکرده است.")
+        return
+    for w in winners:
+        try:
+            await bot.send_message(
+                w["user_id"], t(w["lang"], "ch_winner", title=escape(c["title"]), prize=escape(c["prize"]))
+            )
+        except Exception as e:
+            log.info("Could not notify winner %s: %s", w["user_id"], e)
+    lines = [f"🎉 <b>برندگان چالش #{c['id']}</b> — {escape(c['title'])}\n"]
+    lines += [f"{i}. {_user_line(w)}" for i, w in enumerate(winners, 1)]
+    lines.append("\n📨 به برنده‌ها پیام تبریک ارسال شد.")
     await message.answer("\n".join(lines))
 
 

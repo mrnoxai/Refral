@@ -10,7 +10,7 @@ from texts import t
 def main_menu(lang: str) -> M:
     return M(inline_keyboard=[
         [B(text=t(lang, "btn_gift"), callback_data="gift"),
-         B(text=t(lang, "btn_prize"), callback_data="prizes")],
+         B(text=t(lang, "btn_challenge"), callback_data="challenges")],
         [B(text=t(lang, "btn_profile"), callback_data="profile"),
          B(text=t(lang, "btn_ref"), callback_data="referral")],
         [B(text=t(lang, "btn_support"), callback_data="support"),
@@ -42,17 +42,20 @@ def referral(lang: str, link: str) -> M:
     ])
 
 
-def prizes(lang: str, items) -> M:
-    rows = [[B(text=f"{p['title']} — {p['cost']} 🪙", callback_data=f"prize:{p['id']}")] for p in items]
+def challenges(lang: str, items: list[tuple[int, str]]) -> M:
+    rows = [[B(text=label, callback_data=f"ch:{cid}")] for cid, label in items]
+    rows.append([B(text=t(lang, "btn_refresh"), callback_data="ch_refresh")])
     rows.append([B(text=t(lang, "btn_back"), callback_data="menu")])
     return M(inline_keyboard=rows)
 
 
-def prize_detail(lang: str, prize_id: int) -> M:
-    return M(inline_keyboard=[
-        [B(text=t(lang, "btn_confirm"), callback_data=f"claim:{prize_id}")],
-        [B(text=t(lang, "btn_back"), callback_data="prizes")],
-    ])
+def challenge_detail(lang: str, challenge_id: int, can_join: bool) -> M:
+    rows = []
+    if can_join:
+        rows.append([B(text=t(lang, "btn_join_ch"), callback_data=f"chjoin:{challenge_id}")])
+    rows.append([B(text=t(lang, "btn_refresh"), callback_data=f"ch:{challenge_id}"),
+                 B(text=t(lang, "btn_back_list"), callback_data="challenges")])
+    return M(inline_keyboard=rows)
 
 
 def languages(lang: str) -> M:

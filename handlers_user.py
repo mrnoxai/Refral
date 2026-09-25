@@ -13,6 +13,7 @@ import config
 import database as db
 import keyboards as kb
 from texts import LANGS, t
+from timeutils import is_ended, local_now_hm, local_str, now_db, remaining
 
 router = Router()
 router.message.filter(F.chat.type == "private")
@@ -213,71 +214,98 @@ async def msg_gift_code(message: Message, state: FSMContext):
         await message.answer(t(lang, "gift_invalid"), reply_markup=kb.cancel(lang))
 
 
-# ---------------- جایزه ----------------
-@router.callback_query(F.data == "prizes")
-async def cb_prizes(call: CallbackQuery, bot: Bot):
-    user = await guard(call, bot)
-    if not user:
-        return
+# ---------------- چالش ----------------
+def cost_text(lang: str, cost: int) -> str:
+    return t(lang, "free") if cost <= 0 else t(lang, "cost_tokens", n=cost)
+
+
+async def render_challenges(call: CallbackQuery, user) -> None:
     lang = user["lang"]
-    items = await db.list_prizes()
-    await call.answer()
+    items = await db.list_open_challenges(now_db(), user["user_id"])
     if not items:
-        await safe_edit(call, t(lang, "prizes_empty"), kb.back(lang))
+        await safe_edit(call, t(lang, "ch_empty", time=local_now_hm()), kb.challenges(lang, []))
         return
-    await safe_edit(call, t(lang, "prizes_title", tokens=user["tokens"]), kb.prizes(lang, items))
-
-
-@router.callback_query(F.data.startswith("prize:"))
-async def cb_prize_detail(call: CallbackQuery, bot: Bot):
-    user = await guard(call, bot)
-    if not user:
-        return
-    lang = user["lang"]
-    prize = await db.get_prize(int(call.data.split(":")[1]))
-    if not prize:
-        await call.answer(t(lang, "prize_not_found"), show_alert=True)
-        return
-    await call.answer()
+    buttons = []
+    for c in items:
+        mark = "✅ " if c["joined"] else ""
+        label = f"{mark}{c['title']} · 👥 {c['cnt']} · ⏳ {remaining(c['end_at'], lang)}"
+        buttons.append((c["id"], label))
     await safe_edit(
         call,
-        t(lang, "prize_detail", title=escape(prize["title"]), cost=prize["cost"], tokens=user["tokens"]),
-        kb.prize_detail(lang, prize["id"]),
+        t(lang, "ch_title", tokens=user["tokens"], n=len(items), time=local_now_hm()),
+        kb.challenges(lang, buttons),
     )
 
 
-@router.callback_query(F.data.startswith("claim:"))
-async def cb_claim(call: CallbackQuery, bot: Bot):
+async def render_challenge(call: CallbackQuery, user, challenge_id: int) -> bool:
+    lang = user["lang"]
+    c = await db.get_challenge(challenge_id)
+    if not c:
+        return False
+    joined = await db.has_joined(challenge_id, user["user_id"])
+    ended = is_ended(c["end_at"])
+    status = "ch_status_ended" if ended else ("ch_status_joined" if joined else "ch_status_open")
+    desc = t(lang, "ch_desc", text=escape(c["description"])) if c["description"] else ""
+    text = t(
+        lang, "ch_detail",
+        title=escape(c["title"]),
+        prize=escape(c["prize"]),
+        desc=desc,
+        count=c["cnt"],
+        left=remaining(c["end_at"], lang),
+        end=local_str(c["end_at"]),
+        cost=cost_text(lang, c["cost"]),
+        tokens=user["tokens"],
+        status=t(lang, status),
+    )
+    await safe_edit(call, text, kb.challenge_detail(lang, challenge_id, can_join=not ended and not joined))
+    return True
+
+
+@router.callback_query(F.data.in_({"challenges", "ch_refresh"}))
+async def cb_challenges(call: CallbackQuery, bot: Bot):
+    user = await guard(call, bot)
+    if not user:
+        return
+    if call.data == "ch_refresh":
+        await call.answer(t(user["lang"], "ch_refreshed"))
+    else:
+        await call.answer()
+    await render_challenges(call, user)
+
+
+@router.callback_query(F.data.startswith("ch:"))
+async def cb_challenge_detail(call: CallbackQuery, bot: Bot):
+    user = await guard(call, bot)
+    if not user:
+        return
+    challenge_id = int(call.data.split(":")[1])
+    if await render_challenge(call, user, challenge_id):
+        await call.answer()
+        return
+    await call.answer(t(user["lang"], "ch_not_found"), show_alert=True)
+    await render_challenges(call, user)
+
+
+@router.callback_query(F.data.startswith("chjoin:"))
+async def cb_challenge_join(call: CallbackQuery, bot: Bot):
     user = await guard(call, bot)
     if not user:
         return
     lang = user["lang"]
-    status, prize, claim_id = await db.claim_prize(user["user_id"], int(call.data.split(":")[1]))
-    if status == "not_found":
-        await call.answer(t(lang, "prize_not_found"), show_alert=True)
-        return
-    if status == "insufficient":
-        await call.answer(t(lang, "prize_insufficient"), show_alert=True)
-        return
-
-    await call.answer()
-    await safe_edit(call, t(lang, "prize_ok", title=escape(prize["title"]), claim_id=claim_id), kb.back(lang))
-
-    u = call.from_user
-    uname = f"@{u.username}" if u.username else "-"
-    admin_text = (
-        "🏆 <b>درخواست جایزه جدید</b>\n\n"
-        f"👤 کاربر: <a href=\"tg://user?id={u.id}\">{escape(u.full_name)}</a> ({uname})\n"
-        f"🆔 آیدی: <code>{u.id}</code>\n"
-        f"🎁 جایزه: {escape(prize['title'])}\n"
-        f"💰 هزینه: {prize['cost']} توکن\n"
-        f"🧾 شماره درخواست: #{claim_id}"
-    )
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, admin_text)
-        except Exception as e:
-            log.warning("Could not notify admin %s: %s", admin_id, e)
+    challenge_id = int(call.data.split(":")[1])
+    status = await db.join_challenge(challenge_id, user["user_id"], now_db())
+    messages = {
+        "ok": "ch_join_ok",
+        "already": "ch_already",
+        "insufficient": "ch_insufficient",
+        "ended": "ch_ended",
+        "not_found": "ch_not_found",
+    }
+    await call.answer(t(lang, messages[status]), show_alert=True)
+    user = await db.get_user(user["user_id"])
+    if not await render_challenge(call, user, challenge_id):
+        await render_challenges(call, user)
 
 
 # ---------------- پشتیبانی ----------------

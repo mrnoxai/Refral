@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS claims (
     prize_id   INTEGER NOT NULL,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS challenges (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT    NOT NULL,
+    prize       TEXT    NOT NULL,
+    description TEXT,
+    cost        INTEGER NOT NULL DEFAULT 0,
+    end_at      TEXT    NOT NULL,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT
+);
+CREATE TABLE IF NOT EXISTS participants (
+    challenge_id INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    joined_at    TEXT,
+    PRIMARY KEY (challenge_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS support_map (
     admin_chat_id INTEGER NOT NULL,
     admin_msg_id  INTEGER NOT NULL,
@@ -142,8 +158,10 @@ async def all_user_ids() -> list[int]:
 async def stats() -> dict:
     users = await _one("SELECT COUNT(*) AS c, COALESCE(SUM(tokens),0) AS t FROM users")
     refs = await _one("SELECT COUNT(*) AS c FROM users WHERE ref_credited=1")
-    claims = await _one("SELECT COUNT(*) AS c FROM claims")
-    return {"users": users["c"], "tokens": users["t"], "refs": refs["c"], "claims": claims["c"]}
+    ch = await _one("SELECT COUNT(*) AS c FROM challenges WHERE active=1")
+    parts = await _one("SELECT COUNT(*) AS c FROM participants")
+    return {"users": users["c"], "tokens": users["t"], "refs": refs["c"],
+            "challenges": ch["c"], "participants": parts["c"]}
 
 
 async def top_referrers(limit: int = 10):
@@ -197,44 +215,99 @@ async def redeem_code(code: str, user_id: int):
     return "ok", c["amount"]
 
 
-# ---------------- prizes ----------------
-async def add_prize(title: str, cost: int) -> int:
-    cur = await _db.execute("INSERT INTO prizes(title, cost) VALUES(?,?)", (title, cost))
+# ---------------- challenges ----------------
+_CNT = "(SELECT COUNT(*) FROM participants p WHERE p.challenge_id=c.id) AS cnt"
+
+
+async def add_challenge(title: str, prize: str, description: str, cost: int, end_at: str) -> int:
+    cur = await _db.execute(
+        "INSERT INTO challenges(title, prize, description, cost, end_at, created_at) VALUES(?,?,?,?,?,?)",
+        (title, prize, description, cost, end_at, _now()),
+    )
     await _db.commit()
     return cur.lastrowid
 
 
-async def del_prize(prize_id: int) -> bool:
-    cur = await _db.execute("UPDATE prizes SET active=0 WHERE id=? AND active=1", (prize_id,))
+async def del_challenge(challenge_id: int) -> bool:
+    cur = await _db.execute("UPDATE challenges SET active=0 WHERE id=? AND active=1", (challenge_id,))
     await _db.commit()
     return cur.rowcount == 1
 
 
-async def list_prizes():
-    return await _all("SELECT * FROM prizes WHERE active=1 ORDER BY cost, id")
-
-
-async def get_prize(prize_id: int):
-    return await _one("SELECT * FROM prizes WHERE id=? AND active=1", prize_id)
-
-
-async def claim_prize(user_id: int, prize_id: int):
-    p = await get_prize(prize_id)
-    if not p:
-        return "not_found", None, None
-    cur = await _db.execute(
-        "UPDATE users SET tokens=tokens-? WHERE user_id=? AND tokens>=?",
-        (p["cost"], user_id, p["cost"]),
-    )
-    if cur.rowcount != 1:
-        await _db.commit()
-        return "insufficient", p, None
-    cur = await _db.execute(
-        "INSERT INTO claims(user_id, prize_id, created_at) VALUES(?,?,?)", (user_id, prize_id, _now())
-    )
-    claim_id = cur.lastrowid
+async def set_challenge_end(challenge_id: int, end_at: str) -> bool:
+    cur = await _db.execute("UPDATE challenges SET end_at=? WHERE id=? AND active=1", (end_at, challenge_id))
     await _db.commit()
-    return "ok", p, claim_id
+    return cur.rowcount == 1
+
+
+async def get_challenge(challenge_id: int):
+    return await _one(f"SELECT c.*, {_CNT} FROM challenges c WHERE c.id=? AND c.active=1", challenge_id)
+
+
+async def list_open_challenges(now: str, user_id: int):
+    """چالش‌های فعال و تمام‌نشده + تعداد شرکت‌کننده + اینکه کاربر شرکت کرده یا نه."""
+    return await _all(
+        f"SELECT c.*, {_CNT}, "
+        "EXISTS(SELECT 1 FROM participants p WHERE p.challenge_id=c.id AND p.user_id=?) AS joined "
+        "FROM challenges c WHERE c.active=1 AND c.end_at>? ORDER BY c.end_at",
+        user_id,
+        now,
+    )
+
+
+async def list_all_challenges():
+    return await _all(f"SELECT c.*, {_CNT} FROM challenges c WHERE c.active=1 ORDER BY c.id DESC")
+
+
+async def has_joined(challenge_id: int, user_id: int) -> bool:
+    return bool(await _one(
+        "SELECT 1 FROM participants WHERE challenge_id=? AND user_id=?", challenge_id, user_id
+    ))
+
+
+async def join_challenge(challenge_id: int, user_id: int, now: str) -> str:
+    c = await get_challenge(challenge_id)
+    if not c:
+        return "not_found"
+    if c["end_at"] <= now:
+        return "ended"
+    if await has_joined(challenge_id, user_id):
+        return "already"
+    if c["cost"] > 0:
+        cur = await _db.execute(
+            "UPDATE users SET tokens=tokens-? WHERE user_id=? AND tokens>=?",
+            (c["cost"], user_id, c["cost"]),
+        )
+        if cur.rowcount != 1:
+            await _db.commit()
+            return "insufficient"
+    try:
+        await _db.execute(
+            "INSERT INTO participants(challenge_id, user_id, joined_at) VALUES(?,?,?)",
+            (challenge_id, user_id, _now()),
+        )
+    except sqlite3.IntegrityError:
+        await _db.rollback()
+        return "already"
+    await _db.commit()
+    return "ok"
+
+
+async def challenge_participants(challenge_id: int):
+    return await _all(
+        "SELECT u.user_id, u.first_name, u.username, p.joined_at FROM participants p "
+        "LEFT JOIN users u ON u.user_id=p.user_id WHERE p.challenge_id=? ORDER BY p.joined_at",
+        challenge_id,
+    )
+
+
+async def draw_winners(challenge_id: int, count: int):
+    return await _all(
+        "SELECT u.user_id, u.first_name, u.username, u.lang FROM participants p "
+        "JOIN users u ON u.user_id=p.user_id WHERE p.challenge_id=? ORDER BY RANDOM() LIMIT ?",
+        challenge_id,
+        count,
+    )
 
 
 # ---------------- support ----------------

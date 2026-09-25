@@ -2,7 +2,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "fa": {
         # دکمه‌ها
         "btn_gift": "🎁 کد هدیه",
-        "btn_prize": "🏆 جایزه",
+        "btn_challenge": "🏆 چالش",
         "btn_profile": "👤 پروفایل",
         "btn_ref": "👥 رفرال",
         "btn_support": "💬 پشتیبانی",
@@ -12,7 +12,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_join": "📢 عضویت در کانال",
         "btn_check": "✅ عضو شدم",
         "btn_share": "📤 ارسال لینک برای دوستان",
-        "btn_confirm": "✅ تایید و دریافت",
+        "btn_join_ch": "✅ ثبت شرکت",
+        "btn_refresh": "🔄 بروزرسانی",
+        "btn_back_list": "🔙 لیست چالش‌ها",
         # پیام‌ها
         "welcome": (
             "سلام {name} 👋\n"
@@ -53,21 +55,53 @@ TEXTS: dict[str, dict[str, str]] = {
         "gift_invalid": "❌ این کد معتبر نیست. دوباره امتحان کن یا انصراف بده.",
         "gift_used": "⚠️ قبلاً از این کد استفاده کرده‌ای.",
         "gift_exhausted": "⌛️ ظرفیت استفاده از این کد تمام شده است.",
-        "prizes_title": "🏆 <b>جوایز</b>\n\n🪙 موجودی تو: <b>{tokens}</b> توکن\nیک جایزه را انتخاب کن:",
-        "prizes_empty": "🏆 فعلاً جایزه‌ای تعریف نشده است. بعداً سر بزن!",
-        "prize_detail": (
+        "ch_title": (
+            "🏆 <b>چالش‌ها و جوایز</b>\n\n"
+            "🪙 موجودی تو: <b>{tokens}</b> توکن\n"
+            "📋 چالش‌های فعال: <b>{n}</b>\n\n"
+            "روی هر چالش بزن تا جزئیات را ببینی و شرکت کنی.\n"
+            "✅ = چالش‌هایی که در آن شرکت کرده‌ای\n\n"
+            "🕒 آخرین بروزرسانی: {time}"
+        ),
+        "ch_empty": (
+            "🏆 فعلاً چالش فعالی وجود ندارد.\n"
+            "با دکمه «🔄 بروزرسانی» دوباره بررسی کن.\n\n"
+            "🕒 آخرین بروزرسانی: {time}"
+        ),
+        "ch_detail": (
             "🏆 <b>{title}</b>\n\n"
-            "💰 هزینه: <b>{cost}</b> توکن\n"
-            "🪙 موجودی تو: <b>{tokens}</b> توکن\n\n"
-            "برای دریافت این جایزه تایید کن:"
+            "🎁 جایزه: <b>{prize}</b>\n"
+            "{desc}"
+            "👥 تعداد شرکت‌کنندگان: <b>{count}</b> نفر\n"
+            "⏳ زمان باقی‌مانده: <b>{left}</b>\n"
+            "🗓 پایان: {end}\n"
+            "💰 هزینه شرکت: <b>{cost}</b>\n"
+            "🪙 موجودی تو: {tokens} توکن\n\n"
+            "{status}"
         ),
-        "prize_ok": (
-            "✅ درخواست جایزه «{title}» ثبت شد.\n"
-            "🧾 شماره پیگیری: <code>#{claim_id}</code>\n"
-            "به‌زودی پشتیبانی با تو در ارتباط خواهد بود."
+        "ch_desc": "📝 {text}\n\n",
+        "ch_status_open": "👇 برای شرکت در این چالش روی «✅ ثبت شرکت» بزن.",
+        "ch_status_joined": "✅ تو در این چالش شرکت کرده‌ای. موفق باشی!",
+        "ch_status_ended": "⛔️ زمان شرکت در این چالش تمام شده است.",
+        "ch_join_ok": "🎉 ثبت شرکت انجام شد! با موفقیت در چالش شرکت کردی.",
+        "ch_already": "✅ قبلاً در این چالش شرکت کرده‌ای.",
+        "ch_insufficient": "❌ موجودی توکن برای شرکت در این چالش کافی نیست.",
+        "ch_ended": "⛔️ زمان این چالش تمام شده است.",
+        "ch_not_found": "❌ این چالش دیگر وجود ندارد.",
+        "ch_refreshed": "🔄 بروزرسانی شد",
+        "ch_winner": (
+            "🎉 <b>تبریک!</b>\n\n"
+            "تو برنده چالش «{title}» شدی! 🏆\n"
+            "🎁 جایزه: <b>{prize}</b>\n\n"
+            "به‌زودی پشتیبانی برای تحویل جایزه با تو در ارتباط خواهد بود."
         ),
-        "prize_insufficient": "❌ موجودی توکن کافی نیست.",
-        "prize_not_found": "❌ این جایزه دیگر در دسترس نیست.",
+        "free": "رایگان",
+        "cost_tokens": "{n} توکن",
+        "ended_short": "پایان یافته",
+        "u_day": "روز",
+        "u_hour": "ساعت",
+        "u_min": "دقیقه",
+        "u_and": " و ",
         "support_ask": "💬 پیامت را برای پشتیبانی بنویس و ارسال کن (متن، عکس یا فایل):",
         "support_sent": "✅ پیامت برای پشتیبانی ارسال شد. پاسخ از همین ربات برایت می‌آید.",
         "support_reply": "📬 <b>پاسخ پشتیبانی:</b>",
@@ -77,7 +111,7 @@ TEXTS: dict[str, dict[str, str]] = {
     },
     "en": {
         "btn_gift": "🎁 Gift code",
-        "btn_prize": "🏆 Prizes",
+        "btn_challenge": "🏆 Challenges",
         "btn_profile": "👤 Profile",
         "btn_ref": "👥 Referral",
         "btn_support": "💬 Support",
@@ -87,7 +121,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "btn_join": "📢 Join channel",
         "btn_check": "✅ I've joined",
         "btn_share": "📤 Share with friends",
-        "btn_confirm": "✅ Confirm & claim",
+        "btn_join_ch": "✅ Join challenge",
+        "btn_refresh": "🔄 Refresh",
+        "btn_back_list": "🔙 Challenges",
         "welcome": (
             "Hi {name} 👋\n"
             "Welcome to the referral bot!\n\n"
@@ -127,21 +163,53 @@ TEXTS: dict[str, dict[str, str]] = {
         "gift_invalid": "❌ This code is not valid. Try again or cancel.",
         "gift_used": "⚠️ You have already used this code.",
         "gift_exhausted": "⌛️ This code has reached its usage limit.",
-        "prizes_title": "🏆 <b>Prizes</b>\n\n🪙 Your balance: <b>{tokens}</b> tokens\nChoose a prize:",
-        "prizes_empty": "🏆 No prizes are available right now. Check back later!",
-        "prize_detail": (
+        "ch_title": (
+            "🏆 <b>Challenges &amp; prizes</b>\n\n"
+            "🪙 Your balance: <b>{tokens}</b> tokens\n"
+            "📋 Active challenges: <b>{n}</b>\n\n"
+            "Tap a challenge to see details and join.\n"
+            "✅ = challenges you have joined\n\n"
+            "🕒 Last updated: {time}"
+        ),
+        "ch_empty": (
+            "🏆 There are no active challenges right now.\n"
+            "Tap “🔄 Refresh” to check again.\n\n"
+            "🕒 Last updated: {time}"
+        ),
+        "ch_detail": (
             "🏆 <b>{title}</b>\n\n"
-            "💰 Cost: <b>{cost}</b> tokens\n"
-            "🪙 Your balance: <b>{tokens}</b> tokens\n\n"
-            "Confirm to claim this prize:"
+            "🎁 Prize: <b>{prize}</b>\n"
+            "{desc}"
+            "👥 Participants: <b>{count}</b>\n"
+            "⏳ Time left: <b>{left}</b>\n"
+            "🗓 Ends: {end}\n"
+            "💰 Entry cost: <b>{cost}</b>\n"
+            "🪙 Your balance: {tokens} tokens\n\n"
+            "{status}"
         ),
-        "prize_ok": (
-            "✅ Your request for “{title}” has been submitted.\n"
-            "🧾 Tracking number: <code>#{claim_id}</code>\n"
-            "Support will contact you soon."
+        "ch_desc": "📝 {text}\n\n",
+        "ch_status_open": "👇 Tap “✅ Join challenge” to take part.",
+        "ch_status_joined": "✅ You have joined this challenge. Good luck!",
+        "ch_status_ended": "⛔️ This challenge is closed.",
+        "ch_join_ok": "🎉 You have successfully joined the challenge!",
+        "ch_already": "✅ You have already joined this challenge.",
+        "ch_insufficient": "❌ You don't have enough tokens to join this challenge.",
+        "ch_ended": "⛔️ This challenge has ended.",
+        "ch_not_found": "❌ This challenge no longer exists.",
+        "ch_refreshed": "🔄 Refreshed",
+        "ch_winner": (
+            "🎉 <b>Congratulations!</b>\n\n"
+            "You won the challenge “{title}”! 🏆\n"
+            "🎁 Prize: <b>{prize}</b>\n\n"
+            "Support will contact you soon to deliver your prize."
         ),
-        "prize_insufficient": "❌ Not enough tokens.",
-        "prize_not_found": "❌ This prize is no longer available.",
+        "free": "Free",
+        "cost_tokens": "{n} tokens",
+        "ended_short": "Ended",
+        "u_day": "d",
+        "u_hour": "h",
+        "u_min": "min",
+        "u_and": " ",
         "support_ask": "💬 Write your message to support and send it (text, photo or file):",
         "support_sent": "✅ Your message was sent to support. You'll get the reply here.",
         "support_reply": "📬 <b>Support reply:</b>",
